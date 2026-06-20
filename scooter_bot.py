@@ -11,6 +11,10 @@ TOKEN = os.environ.get("TOKEN", "")
 DATA_FILE = "scooter_data.json"
 ALLOWED_USERS = []
 
+# Твой user_id — только ты можешь делать broadcast
+# Узнай его командой /myid и впиши сюда
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+
 ACTIONS = {
     "charge":  {"label": "Зарядить",   "price": 4.5, "emoji": "🟡"},
     "move":    {"label": "Переставить", "price": 6.0, "emoji": "🟢"},
@@ -437,9 +441,87 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+def get_all_user_ids() -> list:
+    """Возвращает всех юзеров из базы данных."""
+    all_data = load_all()
+    return [int(uid) for uid in all_data.keys() if uid != "0"]
+
+
+async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает твой user_id."""
+    uid = update.effective_user.id
+    name = update.effective_user.first_name
+    await update.message.reply_text(
+        f"👤 *{name}*\n🆔 Твой ID: `{uid}`\n\nСкопируй и добавь в Railway → Variables → `ADMIN_ID`",
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Рассылка сообщения всем юзерам. Только для админа."""
+    user_id = update.effective_user.id
+
+    if ADMIN_ID == 0:
+        await update.message.reply_text("⚠️ Сначала установи ADMIN_ID в переменных Railway.")
+        return
+
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Только админ может делать рассылку.")
+        return
+
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text(
+            "Использование:\n`/broadcast Текст сообщения`",
+            parse_mode="Markdown"
+        )
+        return
+
+    user_ids = get_all_user_ids()
+    if not user_ids:
+        await update.message.reply_text("Нет юзеров в базе.")
+        return
+
+    msg = await update.message.reply_text(f"📤 Отправляю {len(user_ids)} юзерам...")
+
+    sent = 0
+    failed = 0
+    for uid in user_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=f"📢 *Сообщение от администратора:*\n\n{text}",
+                parse_mode="Markdown"
+            )
+            sent += 1
+        except Exception:
+            failed += 1
+
+    await msg.edit_text(
+        f"✅ Отправлено: *{sent}*\n❌ Не доставлено: *{failed}*",
+        parse_mode="Markdown"
+    )
+
+
+async def cmd_stats_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статистика бота для админа."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    all_data = load_all()
+    user_ids = get_all_user_ids()
+    await update.message.reply_text(
+        f"📊 *Статистика бота*\n\n"
+        f"👥 Всего юзеров: *{len(user_ids)}*",
+        parse_mode="Markdown"
+    )
+
+
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("myid", cmd_myid))
+    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    app.add_handler(CommandHandler("adminstats", cmd_stats_admin))
     app.add_handler(CallbackQueryHandler(button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     print("Бот запущен!")
