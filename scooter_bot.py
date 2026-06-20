@@ -1,13 +1,13 @@
 import json
 import os
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes,
 )
 
-TOKEN = os.environ.get("TOKEN", "8807803061:AAEv70H91fLaCgbCGulfaNftJFafHzq_I6o")
+TOKEN = os.environ.get("TOKEN", "")
 DATA_FILE = "scooter_data.json"
 ALLOWED_USERS = []
 
@@ -20,6 +20,7 @@ ACTIONS = {
 }
 
 GOAL = 250.0
+WEBAPP_URL = os.environ.get("WEBAPP_URL", "")
 
 
 # ─── DATA ─────────────────────────────────────────────────────────────────────
@@ -76,12 +77,16 @@ def weekly_total(store: dict) -> float:
 # ─── KEYBOARDS ────────────────────────────────────────────────────────────────
 
 def kb_main() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+    buttons = []
+    if WEBAPP_URL:
+        buttons.append([InlineKeyboardButton("🚀 Открыть CRM", web_app=WebAppInfo(url=WEBAPP_URL))])
+    buttons += [
         [InlineKeyboardButton("📊 Сегодня",           callback_data="view_today")],
         [InlineKeyboardButton("✏️ Добавить вручную",  callback_data="manual_start")],
         [InlineKeyboardButton("📋 Отчёт",             callback_data="view_report")],
         [InlineKeyboardButton("📅 Неделя",            callback_data="view_week")],
-    ])
+    ]
+    return InlineKeyboardMarkup(buttons)
 
 
 def kb_today() -> InlineKeyboardMarkup:
