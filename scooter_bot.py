@@ -481,6 +481,23 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(f"✅ Отправлено: *{sent}*\n❌ Не доставлено: *{failed}*", parse_mode="Markdown")
 
 
+async def cmd_getkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    try:
+        data = api_post("/auth/generate-key", user_id, {})
+        key = data["key"]
+        pwa_url = os.environ.get("WEBAPP_URL", "").replace("/index.html", "")
+        await update.message.reply_text(
+            f"🔑 *Твой ключ для входа в CRM:*\n\n`{key}`\n\n"
+            f"_Нажми на ключ чтобы скопировать_\n\n"
+            f"Открой приложение и введи этот ключ при первом входе. "
+            f"Больше вводить не нужно — телефон запомнит.",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Ошибка: {e}")
+
+
 async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if ADMIN_ID and user_id != ADMIN_ID:
@@ -544,6 +561,7 @@ def main():
     app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CommandHandler("getkey", cmd_getkey))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    app.add_handler(CommandHandler("getkey", cmd_getkey))
     app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(CommandHandler("adminstats", cmd_adminstats))
     app.add_handler(CallbackQueryHandler(button))
