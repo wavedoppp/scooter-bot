@@ -514,6 +514,20 @@ async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Ошибка: {e}")
 
 
+async def cmd_getkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    try:
+        key_data = api_post("/auth/generate-key", user_id, {})
+        key = key_data.get("key", "")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Ошибка получения ключа: {e}")
+        return
+    await update.message.reply_text(
+        f"🔑 Твой ключ для входа в CRM:\n\n`{key}`\n\nНажми чтобы скопировать, затем вставь в приложении.\n\n⚠️ Не передавай ключ другим людям.",
+        parse_mode="Markdown"
+    )
+
+
 async def cmd_adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -528,6 +542,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("myid", cmd_myid))
+    app.add_handler(CommandHandler("getkey", cmd_getkey))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(CommandHandler("adminstats", cmd_adminstats))
