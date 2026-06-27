@@ -481,6 +481,39 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(f"✅ Отправлено: *{sent}*\n❌ Не доставлено: *{failed}*", parse_mode="Markdown")
 
 
+async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if ADMIN_ID and user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Только для админа.")
+        return
+    try:
+        url = API_URL + "/admin/backup"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+
+        text = (
+            f"🗄 *Бекап базы данных*\n\n"
+            f"📅 {data['exported_at']}\n"
+            f"👥 Юзеров: *{data['total_users']}*\n"
+            f"📝 Записей: *{data['total_records']}*\n\n"
+            f"Полный JSON:"
+        )
+        await update.message.reply_text(text, parse_mode="Markdown")
+
+        # Отправляем JSON файлом
+        filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        from io import BytesIO
+        await update.message.reply_document(
+            document=BytesIO(json_bytes),
+            filename=filename,
+            caption=f"💾 Бекап от {data['exported_at']}"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Ошибка: {e}")
+
+
 async def cmd_adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -496,6 +529,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(CommandHandler("adminstats", cmd_adminstats))
     app.add_handler(CallbackQueryHandler(button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
