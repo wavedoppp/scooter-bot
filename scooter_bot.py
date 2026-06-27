@@ -487,20 +487,25 @@ async def cmd_getkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         data = api_post("/auth/generate-key", user_id, {})
         key = data["key"]
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🌐 Открыть в браузере", url=pwa_url)
+        ]])
         await update.message.reply_text(
             f"🔑 *Твой ключ для входа в CRM:*\n\n"
             f"`{key}`\n"
             f"_↑ нажми чтобы скопировать_\n\n"
             f"━━━━━━━━━━━━━━━\n"
             f"📲 *Как установить приложение:*\n\n"
-            f"1️⃣ Открой ссылку:\n{pwa_url}\n\n"
+            f"1️⃣ Нажми кнопку ниже\n"
+            f"_или удержи → «Открыть в Safari/Chrome»_\n\n"
             f"2️⃣ Введи ключ → войди в CRM\n\n"
             f"3️⃣ Установи на экран:\n"
-            f"• *iPhone:* кнопка Поделиться → «На экран Домой»\n"
-            f"• *Android:* меню браузера → «Установить приложение»\n\n"
-            f"✅ После установки открывается как обычное приложение — без браузера, на весь экран. Ключ вводится только один раз.",
+            f"• *iPhone:* Поделиться → «На экран Домой»\n"
+            f"• *Android:* меню ⋮ → «Установить приложение»\n\n"
+            f"✅ Ключ вводится только один раз — телефон запомнит.",
             parse_mode="Markdown",
             disable_web_page_preview=True,
+            reply_markup=kb,
         )
     except Exception as e:
         await update.message.reply_text(f"⚠️ Ошибка: {e}")
