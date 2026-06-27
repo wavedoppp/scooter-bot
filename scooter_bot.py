@@ -483,16 +483,24 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_getkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    pwa_url = "https://wavedoppp.github.io/scooter-crm-frontend"
     try:
         data = api_post("/auth/generate-key", user_id, {})
         key = data["key"]
-        pwa_url = os.environ.get("WEBAPP_URL", "").replace("/index.html", "")
         await update.message.reply_text(
-            f"🔑 *Твой ключ для входа в CRM:*\n\n`{key}`\n\n"
-            f"_Нажми на ключ чтобы скопировать_\n\n"
-            f"Открой приложение и введи этот ключ при первом входе. "
-            f"Больше вводить не нужно — телефон запомнит.",
-            parse_mode="Markdown"
+            f"🔑 *Твой ключ для входа в CRM:*\n\n"
+            f"`{key}`\n"
+            f"_↑ нажми чтобы скопировать_\n\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"📲 *Как установить приложение:*\n\n"
+            f"1️⃣ Открой ссылку:\n{pwa_url}\n\n"
+            f"2️⃣ Введи ключ → войди в CRM\n\n"
+            f"3️⃣ Установи на экран:\n"
+            f"• *iPhone:* кнопка Поделиться → «На экран Домой»\n"
+            f"• *Android:* меню браузера → «Установить приложение»\n\n"
+            f"✅ После установки открывается как обычное приложение — без браузера, на весь экран. Ключ вводится только один раз.",
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
         )
     except Exception as e:
         await update.message.reply_text(f"⚠️ Ошибка: {e}")
