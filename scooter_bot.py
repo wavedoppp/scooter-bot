@@ -549,6 +549,36 @@ async def cmd_adminstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def auto_backup(context: ContextTypes.DEFAULT_TYPE):
+    """Автоматический ежедневный бэкап — отправляет JSON админу."""
+    if not ADMIN_ID:
+        return
+    try:
+        url = API_URL + "/admin/backup"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+        from io import BytesIO
+        filename = f"backup_{datetime.now().strftime('%Y%m%d')}.json"
+        json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        await context.bot.send_document(
+            chat_id=ADMIN_ID,
+            document=BytesIO(json_bytes),
+            filename=filename,
+            caption=(
+                f"🗄 *Авто-бекап*\n"
+                f"📅 {data['exported_at']}\n"
+                f"👥 Юзеров: {data['total_users']} | 📝 Записей: {data['total_records']}"
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        try:
+            await context.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ Авто-бекап не удался: {e}")
+        except Exception:
+            pass
+
+
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -559,6 +589,11 @@ def main():
     app.add_handler(CommandHandler("adminstats", cmd_adminstats))
     app.add_handler(CallbackQueryHandler(button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # Авто-бекап каждый день в 23:00 по UTC (01:00 по Варшаве зимой / 01:00 летом)
+    job_queue = app.job_queue
+    job_queue.run_daily(auto_backup, time=datetime.strptime("23:00", "%H:%M").time())
+
     print("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
