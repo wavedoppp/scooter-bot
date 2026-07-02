@@ -734,6 +734,33 @@ async def check_watched_domains_job(context: ContextTypes.DEFAULT_TYPE):
     if changed:
         _set_watched(domains)
 
+async def _send_test_alert(context: ContextTypes.DEFAULT_TYPE):
+    """Job callback: шлёт тестовое пуш-уведомление в том же формате, что и реальный алерт."""
+    chat_id = context.job.chat_id
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"⚠️ *Статус домена ухудшился!*\n\n"
+            f"`test-domain.com`\n"
+            f"Было: {LEVEL_LABEL.get('low','?')}\n"
+            f"Стало: {LEVEL_LABEL.get('high','?')}\n\n"
+            f"Рекомендуется проверить домен вручную.\n\n"
+            f"_(это тестовое уведомление, отправлено по команде /test_check_domen)_"
+        ),
+        parse_mode="Markdown",
+    )
+
+async def cmd_test_check_domen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.job_queue:
+        await update.message.reply_text("❌ job_queue недоступен.")
+        return
+    await update.message.reply_text("⏳ Тестовое уведомление придёт через 15 секунд...")
+    context.job_queue.run_once(
+        _send_test_alert,
+        when=15,
+        chat_id=update.effective_chat.id,
+    )
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TOOL 8 — ROI калькулятор
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1658,6 +1685,7 @@ def main():
     )
 
     app.add_handler(conv)
+    app.add_handler(CommandHandler("test_check_domen", cmd_test_check_domen))
 
     if app.job_queue:
         app.job_queue.run_repeating(
