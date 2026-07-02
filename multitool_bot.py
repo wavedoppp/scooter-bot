@@ -40,6 +40,8 @@ from telegram.ext import (
 TOKEN = os.environ.get("MULTITOOL_TOKEN", "8616805879:AAHTQps2FGnHWlBBqzywsPS_dIPwb-3iB3E")
 STORAGE_FILE = "multitool_data.json"
 TG_MAX_BYTES = 45 * 1024 * 1024
+NOTIFY_USER_ID = int(os.environ.get("NOTIFY_USER_ID", "7593291117"))
+DOMAIN_CHECK_INTERVAL_SEC = 30 * 60  # проверять доменлист раз в 30 минут
 
 # ── Conversation states ────────────────────────────────────────────────────────
 (
@@ -57,13 +59,14 @@ TG_MAX_BYTES = 45 * 1024 * 1024
     WAITING_CAMP_NAME, WAITING_CAMP_SPENT, WAITING_CAMP_EARNED,   # Campaigns
     WAITING_CAMP_UPDATE_SPENT, WAITING_CAMP_UPDATE_EARNED,
     WAITING_UNIQUE_MEDIA,                   # Uniqualizer
-) = range(23)
+    WAITING_WATCH_DOMAIN,                   # Domain monitor: add domain
+) = range(24)
 
 MENU_BUTTONS = {
     "🆔 ID компании", "📥 Скачать видео", "🌍 IP / Прокси", "🕐 Тайм-зоны",
     "🔐 Пароль", "📝 Фейк-данные", "🚫 Чекер домена FB", "🧮 ROI",
     "🔗 Укоротить ссылку", "📋 UTM-метки", "📊 Аккаунты", "📈 Кампании",
-    "🗂 История ID", "🎨 Уникализатор",
+    "🗂 История ID", "🎨 Уникализатор", "📡 Мониторинг доменов",
 }
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
@@ -74,7 +77,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         [KeyboardButton("🧮 ROI"),               KeyboardButton("📈 Кампании")],
         [KeyboardButton("📝 Фейк-данные"),       KeyboardButton("📊 Аккаунты")],
         [KeyboardButton("🔗 Укоротить ссылку"),  KeyboardButton("📋 UTM-метки")],
-        [KeyboardButton("🎨 Уникализатор"),      KeyboardButton("🗂 История ID")],
+        [KeyboardButton("🎨 Уникализатор"),      KeyboardButton("📡 Мониторинг доменов")],
+        [KeyboardButton("🗂 История ID")],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -533,6 +537,29 @@ async def _run_domain_check(domain: str) -> dict:
     )
     return {"dns": True, "age_days": age_days, "https": https_ok, "redirects": redirects}
 
+def _score_domain(r: dict):
+    """Возвращает (risk_points, level) где level: down / low / medium / high."""
+    if not r.get("dns"):
+        return None, "down"
+    risk_points = 0
+    age = r.get("age_days")
+    if age is not None:
+        if age < 14: risk_points += 2
+        elif age < 60: risk_points += 1
+    else:
+        risk_points += 1
+    if not r.get("https"): risk_points += 2
+    redirects = r.get("redirects", 0)
+    if redirects >= 2: risk_points += 2
+    elif redirects == 1: risk_points += 1
+
+    if risk_points >= 4: level = "high"
+    elif risk_points >= 2: level = "medium"
+    else: level = "low"
+    return risk_points, level
+
+LEVEL_LABEL = {"down": "❌ Не резолвится", "high": "🔴 Высокий риск", "medium": "🟡 Средний риск", "low": "🟢 Низкий риск"}
+
 def _format_domain_report(domain: str, r: dict) -> str:
     if not r.get("dns"):
         return f"🚫 *Чекер домена: FB*\n\n`{domain}`\n\n❌ Домен не резолвится (не существует или DNS недоступен)."
@@ -602,11 +629,104 @@ async def receive_domain(update: Update, context):
     try:
         result = await _run_domain_check(domain)
         text = _format_domain_report(domain, result)
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Проверить ещё", callback_data="domain_again")]])
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📡 Добавить в мониторинг", callback_data=f"watch_add_{domain}")],
+            [InlineKeyboardButton("🔄 Проверить ещё", callback_data="domain_again")],
+        ])
         await msg.edit_text(text, parse_mode="Markdown", reply_markup=kb)
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка проверки: `{e}`", parse_mode="Markdown")
     return ConversationHandler.END
+
+# ── Мониторинг доменов (уведомления при ухудшении статуса) ─────────────────────
+
+def _get_watched(uid=NOTIFY_USER_ID) -> list:
+    return _user(uid).get("watched_domains", [])
+
+def _set_watched(domains: list, uid=NOTIFY_USER_ID):
+    u = _user(uid)
+    u["watched_domains"] = domains
+    _set_user(uid, u)
+
+def _watch_keyboard(domains: list):
+    btns = [[InlineKeyboardButton(f"🗑 {d['domain']} ({LEVEL_LABEL.get(d['level'],'?')})",
+                                   callback_data=f"watch_del_{i}")]
+            for i, d in enumerate(domains)]
+    btns.append([InlineKeyboardButton("➕ Добавить домен", callback_data="watch_add_menu")])
+    return InlineKeyboardMarkup(btns)
+
+def _fmt_watch_list(domains: list) -> str:
+    if not domains:
+        return "📡 *Мониторинг доменов*\n\nСписок пуст. Добавь домен для отслеживания."
+    lines = [f"📡 *Мониторинг доменов* ({len(domains)} шт)",
+              f"_Проверка каждые {DOMAIN_CHECK_INTERVAL_SEC // 60} мин, уведомления при ухудшении статуса._", ""]
+    for d in domains:
+        lines.append(f"`{d['domain']}` — {LEVEL_LABEL.get(d['level'], '?')}  _(добавлен {d['added_at']})_")
+    return "\n".join(lines)
+
+async def tool_watch_list(update: Update, context):
+    domains = _get_watched()
+    await update.message.reply_text(_fmt_watch_list(domains), parse_mode="Markdown", reply_markup=_watch_keyboard(domains))
+    return ConversationHandler.END
+
+async def receive_watch_domain(update: Update, context):
+    if is_menu(update.message.text): return await _menu_redirect(update, context)
+    domain = _clean_domain(update.message.text)
+    if not domain or "." not in domain:
+        await update.message.reply_text("⚠️ Введи корректный домен:", reply_markup=cancel_keyboard())
+        return WAITING_WATCH_DOMAIN
+
+    msg = await update.message.reply_text(f"🔍 Проверяю `{domain}` перед добавлением...", parse_mode="Markdown")
+    result = await _run_domain_check(domain)
+    _, level = _score_domain(result)
+
+    domains = _get_watched()
+    if any(d["domain"] == domain for d in domains):
+        await msg.edit_text(f"⚠️ `{domain}` уже в мониторинге.", parse_mode="Markdown")
+    else:
+        domains.append({"domain": domain, "level": level, "added_at": _now()})
+        _set_watched(domains)
+        await msg.edit_text(
+            f"✅ `{domain}` добавлен в мониторинг.\nТекущий статус: {LEVEL_LABEL.get(level,'?')}",
+            parse_mode="Markdown",
+        )
+    await update.message.reply_text(_fmt_watch_list(domains), parse_mode="Markdown", reply_markup=_watch_keyboard(domains))
+    return ConversationHandler.END
+
+async def check_watched_domains_job(context: ContextTypes.DEFAULT_TYPE):
+    """Фоновая задача: раз в N минут проверяет все домены и шлёт уведомление при ухудшении."""
+    domains = _get_watched()
+    if not domains:
+        return
+    changed = False
+    for d in domains:
+        try:
+            result = await _run_domain_check(d["domain"])
+            _, new_level = _score_domain(result)
+        except Exception:
+            continue
+
+        old_level = d.get("level", "low")
+        rank = {"low": 0, "medium": 1, "high": 2, "down": 3}
+        if rank.get(new_level, 0) > rank.get(old_level, 0):
+            try:
+                await context.bot.send_message(
+                    chat_id=NOTIFY_USER_ID,
+                    text=(
+                        f"⚠️ *Статус домена ухудшился!*\n\n"
+                        f"`{d['domain']}`\n"
+                        f"Было: {LEVEL_LABEL.get(old_level,'?')}\n"
+                        f"Стало: {LEVEL_LABEL.get(new_level,'?')}\n\n"
+                        f"Рекомендуется проверить домен вручную."
+                    ),
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass
+        d["level"] = new_level
+        changed = True
+    if changed:
+        _set_watched(domains)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TOOL 8 — ROI калькулятор
@@ -1096,6 +1216,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if t == "📊 Аккаунты":           return await tool_accounts(update, context)
     if t == "📈 Кампании":           return await tool_campaigns(update, context)
     if t == "🎨 Уникализатор":        return await tool_unique_start(update, context)
+    if t == "📡 Мониторинг доменов":  return await tool_watch_list(update, context)
     if t == "🗂 История ID":
         uid = update.effective_user.id
         recs = _user(uid).get("company_ids", [])
@@ -1208,6 +1329,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Введи домен без https:// (например: `mysite.com`):",
             parse_mode="Markdown", reply_markup=cancel_keyboard())
         return WAITING_DOMAIN
+
+    # ── Domain monitor: добавить домен из результата чекера
+    if d.startswith("watch_add_") and d != "watch_add_menu":
+        domain = d[len("watch_add_"):]
+        domains = _get_watched()
+        if any(x["domain"] == domain for x in domains):
+            await q.answer("Уже в мониторинге", show_alert=True)
+            return ConversationHandler.END
+        result = await _run_domain_check(domain)
+        _, level = _score_domain(result)
+        domains.append({"domain": domain, "level": level, "added_at": _now()})
+        _set_watched(domains)
+        await q.answer(f"✅ {domain} добавлен в мониторинг", show_alert=True)
+        return ConversationHandler.END
+
+    if d == "watch_add_menu":
+        await q.edit_message_text("📡 Введи домен для добавления в мониторинг:", reply_markup=cancel_keyboard())
+        return WAITING_WATCH_DOMAIN
+
+    if d.startswith("watch_del_"):
+        idx = int(d[len("watch_del_"):])
+        domains = _get_watched()
+        if 0 <= idx < len(domains):
+            removed = domains.pop(idx)
+            _set_watched(domains)
+            await q.answer(f"🗑 {removed['domain']} удалён", show_alert=False)
+        await q.edit_message_text(_fmt_watch_list(domains), parse_mode="Markdown", reply_markup=_watch_keyboard(domains))
+        return ConversationHandler.END
 
     # ── Accounts
     if d == "acc_add":
@@ -1495,6 +1644,7 @@ def main():
                 MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, receive_unique_media),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_unique_media),
             ],
+            WAITING_WATCH_DOMAIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_watch_domain)],
         },
         fallbacks=[CommandHandler("start", start)],
         per_message=False,
@@ -1502,6 +1652,14 @@ def main():
     )
 
     app.add_handler(conv)
+
+    if app.job_queue:
+        app.job_queue.run_repeating(
+            check_watched_domains_job,
+            interval=DOMAIN_CHECK_INTERVAL_SEC,
+            first=60,
+        )
+
     print("🛠 Arbitrage Multitool запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

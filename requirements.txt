@@ -1,1 +1,6 @@
 python-telegram-bot[job-queue]==20.7
+yt-dlp>=2025.1.1
+faker>=20.0.0
+Pillow>=10.0.0
+piexif>=1.1.3
+numpy>=1.24.0
