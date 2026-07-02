@@ -37,7 +37,13 @@ from telegram.ext import (
     filters,
 )
 
-TOKEN = os.environ.get("MULTITOOL_TOKEN", "8616805879:AAHTQps2FGnHWlBBqzywsPS_dIPwb-3iB3E")
+TOKEN = os.environ.get("MULTITOOL_TOKEN")
+if not TOKEN:
+    raise RuntimeError(
+        "MULTITOOL_TOKEN env var is not set. "
+        "Set it in Railway Variables (revoke the old hardcoded token via @BotFather first "
+        "if it may still be running elsewhere)."
+    )
 STORAGE_FILE = "multitool_data.json"
 TG_MAX_BYTES = 45 * 1024 * 1024
 NOTIFY_USER_ID = int(os.environ.get("NOTIFY_USER_ID", "7593291117"))
