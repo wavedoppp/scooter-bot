@@ -46,7 +46,7 @@ TG_MAX_BYTES = 45 * 1024 * 1024
     WAITING_PREFIX, WAITING_COUNT,          # ID generator
     WAITING_URL,                            # Video download
     WAITING_IP,                             # IP checker
-    WAITING_CURRENCY,                       # Currency
+    WAITING_DOMAIN,                          # FB domain checker
     WAITING_ROI_SPENT, WAITING_ROI_EARNED,  # ROI
     WAITING_PASS_LEN,                       # Password
     WAITING_FAKE_COUNTRY,                   # Fake data
@@ -61,7 +61,7 @@ TG_MAX_BYTES = 45 * 1024 * 1024
 
 MENU_BUTTONS = {
     "🆔 ID компании", "📥 Скачать видео", "🌍 IP / Прокси", "🕐 Тайм-зоны",
-    "🔐 Пароль", "📝 Фейк-данные", "💱 Валюты", "🧮 ROI",
+    "🔐 Пароль", "📝 Фейк-данные", "🚫 Чекер домена FB", "🧮 ROI",
     "🔗 Укоротить ссылку", "📋 UTM-метки", "📊 Аккаунты", "📈 Кампании",
     "🗂 История ID", "🎨 Уникализатор",
 }
@@ -70,7 +70,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("🆔 ID компании"),      KeyboardButton("🔐 Пароль")],
         [KeyboardButton("📥 Скачать видео"),     KeyboardButton("🌍 IP / Прокси")],
-        [KeyboardButton("🕐 Тайм-зоны"),         KeyboardButton("💱 Валюты")],
+        [KeyboardButton("🕐 Тайм-зоны"),         KeyboardButton("🚫 Чекер домена FB")],
         [KeyboardButton("🧮 ROI"),               KeyboardButton("📈 Кампании")],
         [KeyboardButton("📝 Фейк-данные"),       KeyboardButton("📊 Аккаунты")],
         [KeyboardButton("🔗 Укоротить ссылку"),  KeyboardButton("📋 UTM-метки")],
@@ -450,45 +450,163 @@ async def tool_fake(update: Update, context):
     return ConversationHandler.END
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TOOL 7 — Конвертер валют
+# TOOL 7 — Чекер домена (риск бана Facebook)
 # ══════════════════════════════════════════════════════════════════════════════
+#
+# ВАЖНО: у Facebook нет публичного API "забанен домен или нет".
+# Graph API scrape без App-токена всегда возвращает одну и ту же generic-ошибку
+# независимо от статуса, а l.facebook.com/l.php показывает interstitial-предупреждение
+# ДЛЯ ЛЮБОГО внешнего домена — это не сигнал бана.
+# Поэтому чекер работает по best-effort принципу: собирает публичные сигналы риска
+# (возраст домена, SSL, редиректы, доступность) и даёт оценку риска, а не факт бана.
+# 100% точный ответ даёт только реальный тест в Ads Manager / Business Manager.
 
-CURRENCIES = ["USD", "EUR", "PLN", "UAH", "GBP", "CZK", "TRY", "THB"]
+import ssl
+import socket
+import http.client
 
-def _currency_keyboard():
-    btns = []
-    row = []
-    for c in CURRENCIES:
-        row.append(InlineKeyboardButton(c, callback_data=f"cur_base_{c}"))
-        if len(row) == 4:
-            btns.append(row); row = []
-    if row: btns.append(row)
-    return InlineKeyboardMarkup(btns)
+def _clean_domain(text: str) -> str:
+    t = text.strip().lower()
+    t = re.sub(r"^https?://", "", t)
+    t = t.split("/")[0]
+    return t
 
-async def tool_currency(update: Update, context):
+def _check_dns(domain: str) -> bool:
+    try:
+        socket.setdefaulttimeout(5)
+        socket.gethostbyname(domain)
+        return True
+    except Exception:
+        return False
+
+def _check_domain_age_days(domain: str):
+    try:
+        req = urllib.request.Request(f"https://rdap.org/domain/{domain}", headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read())
+        for ev in data.get("events", []):
+            if ev.get("eventAction") == "registration":
+                reg_date = datetime.fromisoformat(ev["eventDate"].replace("Z", "+00:00"))
+                age = (datetime.now(reg_date.tzinfo) - reg_date).days
+                return age
+        return None
+    except Exception:
+        return None
+
+def _check_https(domain: str) -> bool:
+    try:
+        ctx = ssl.create_default_context()
+        conn = http.client.HTTPSConnection(domain, timeout=6, context=ctx)
+        conn.request("HEAD", "/")
+        conn.getresponse()
+        return True
+    except Exception:
+        return False
+
+def _check_redirects(domain: str) -> int:
+    """Считает цепочку редиректов — много редиректов = типичный паттерн cloaking-страниц."""
+    try:
+        url = f"https://{domain}/"
+        count = 0
+        for _ in range(6):
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            r = urllib.request.urlopen(req, timeout=6)
+            if r.geturl() != url:
+                count += 1
+                url = r.geturl()
+            else:
+                break
+        return count
+    except Exception:
+        return 0
+
+async def _run_domain_check(domain: str) -> dict:
+    loop = asyncio.get_event_loop()
+    dns_ok = await loop.run_in_executor(None, _check_dns, domain)
+    if not dns_ok:
+        return {"dns": False}
+
+    age_days, https_ok, redirects = await asyncio.gather(
+        loop.run_in_executor(None, _check_domain_age_days, domain),
+        loop.run_in_executor(None, _check_https, domain),
+        loop.run_in_executor(None, _check_redirects, domain),
+    )
+    return {"dns": True, "age_days": age_days, "https": https_ok, "redirects": redirects}
+
+def _format_domain_report(domain: str, r: dict) -> str:
+    if not r.get("dns"):
+        return f"🚫 *Чекер домена: FB*\n\n`{domain}`\n\n❌ Домен не резолвится (не существует или DNS недоступен)."
+
+    risk_points = 0
+    lines = [f"🚫 *Чекер домена: FB*", f"`{domain}`", ""]
+
+    age = r.get("age_days")
+    if age is not None:
+        if age < 14:
+            lines.append(f"📅 Возраст: *{age} дн.* 🔴 (очень новый — высокий риск для рекламы)")
+            risk_points += 2
+        elif age < 60:
+            lines.append(f"📅 Возраст: *{age} дн.* 🟡 (молодой домен)")
+            risk_points += 1
+        else:
+            years = age // 365
+            lines.append(f"📅 Возраст: *{age} дн.* (~{years} г.) 🟢")
+    else:
+        lines.append("📅 Возраст: не удалось определить (WHOIS скрыт)")
+        risk_points += 1
+
+    if r.get("https"):
+        lines.append("🔒 HTTPS: 🟢 работает")
+    else:
+        lines.append("🔒 HTTPS: 🔴 недоступен")
+        risk_points += 2
+
+    redirects = r.get("redirects", 0)
+    if redirects >= 2:
+        lines.append(f"🔀 Редиректы: *{redirects}* 🔴 (похоже на cloaking)")
+        risk_points += 2
+    elif redirects == 1:
+        lines.append(f"🔀 Редиректы: *{redirects}* 🟡")
+        risk_points += 1
+    else:
+        lines.append("🔀 Редиректы: 0 🟢")
+
+    if risk_points >= 4:
+        verdict = "🔴 *Высокий риск* — вероятность блокировки/флага у Facebook повышена"
+    elif risk_points >= 2:
+        verdict = "🟡 *Средний риск* — стоит тестировать осторожно"
+    else:
+        verdict = "🟢 *Низкий риск* — явных красных флагов не найдено"
+
+    lines += ["", f"📊 Итог: {verdict}", "",
+              "⚠️ _Это эвристическая оценка по публичным данным, НЕ официальная проверка бана в FB._\n"
+              "_Facebook не даёт публичного API для проверки статуса домена — 100% точный ответ даёт только реальный тест в Ads Manager._"]
+    return "\n".join(lines)
+
+async def tool_domain_start(update: Update, context):
     await update.message.reply_text(
-        "💱 *Конвертер валют*\n\nВыбери базовую валюту или напиши запрос:\n`100 USD EUR`",
-        parse_mode="Markdown", reply_markup=_currency_keyboard())
-    return WAITING_CURRENCY
+        "🚫 *Чекер домена (риск для Facebook)*\n\n"
+        "Введи домен без https:// (например: `mysite.com`):\n\n"
+        "_Проверяю: возраст домена, HTTPS, цепочку редиректов._",
+        parse_mode="Markdown", reply_markup=cancel_keyboard())
+    return WAITING_DOMAIN
 
-async def receive_currency(update: Update, context):
+async def receive_domain(update: Update, context):
     if is_menu(update.message.text): return await _menu_redirect(update, context)
-    parts = update.message.text.strip().upper().split()
-    if len(parts) == 3 and parts[0].isdigit() or (len(parts) == 3 and re.match(r"^\d+\.?\d*$", parts[0])):
-        amount, frm, to = float(parts[0]), parts[1], parts[2]
-        msg = await update.message.reply_text("💱 Получаю курс...")
-        try:
-            data = await fetch(f"https://api.frankfurter.app/latest?from={frm}&to={to}")
-            rate = data["rates"][to]
-            result = amount * rate
-            await msg.edit_text(
-                f"💱 *{amount:,.2f} {frm}* = *{result:,.2f} {to}*\n_Курс: 1 {frm} = {rate} {to}_",
-                parse_mode="Markdown", reply_markup=back_keyboard())
-        except Exception as e:
-            await msg.edit_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
-        return ConversationHandler.END
-    await update.message.reply_text("⚠️ Формат: `100 USD EUR`", parse_mode="Markdown")
-    return WAITING_CURRENCY
+    domain = _clean_domain(update.message.text)
+    if not domain or "." not in domain:
+        await update.message.reply_text("⚠️ Введи корректный домен, например `mysite.com`:", parse_mode="Markdown", reply_markup=cancel_keyboard())
+        return WAITING_DOMAIN
+
+    msg = await update.message.reply_text(f"🔍 Проверяю `{domain}`...", parse_mode="Markdown")
+    try:
+        result = await _run_domain_check(domain)
+        text = _format_domain_report(domain, result)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Проверить ещё", callback_data="domain_again")]])
+        await msg.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception as e:
+        await msg.edit_text(f"❌ Ошибка проверки: `{e}`", parse_mode="Markdown")
+    return ConversationHandler.END
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TOOL 8 — ROI калькулятор
@@ -971,7 +1089,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if t == "🕐 Тайм-зоны":          return await tool_tz(update, context)
     if t == "🔐 Пароль":             return await tool_pass(update, context)
     if t == "📝 Фейк-данные":        return await tool_fake(update, context)
-    if t == "💱 Валюты":             return await tool_currency(update, context)
+    if t == "🚫 Чекер домена FB":     return await tool_domain_start(update, context)
     if t == "🧮 ROI":                return await tool_roi(update, context)
     if t == "🔗 Укоротить ссылку":   return await tool_short(update, context)
     if t == "📋 UTM-метки":          return await tool_utm(update, context)
@@ -1083,21 +1201,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown", reply_markup=_fake_keyboard())
         return ConversationHandler.END
 
-    # ── Currency base select
-    if d.startswith("cur_base_"):
-        base = d[9:]
-        msg = await q.edit_message_text(f"💱 Загружаю курсы для {base}...")
-        try:
-            targets = [c for c in CURRENCIES if c != base]
-            to_str = ",".join(targets)
-            data = await fetch(f"https://api.frankfurter.app/latest?from={base}&to={to_str}")
-            lines = [f"💱 *Курсы {base}* _(актуально)_", ""]
-            for cur, rate in data["rates"].items():
-                lines.append(f"`1 {base}` = `{rate:.4f} {cur}`")
-            await msg.edit_text("\n".join(lines), parse_mode="Markdown", reply_markup=back_keyboard())
-        except Exception as e:
-            await msg.edit_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
-        return ConversationHandler.END
+    # ── Domain checker: проверить ещё раз
+    if d == "domain_again":
+        await q.edit_message_text(
+            "🚫 *Чекер домена (риск для Facebook)*\n\n"
+            "Введи домен без https:// (например: `mysite.com`):",
+            parse_mode="Markdown", reply_markup=cancel_keyboard())
+        return WAITING_DOMAIN
 
     # ── Accounts
     if d == "acc_add":
@@ -1363,7 +1473,8 @@ def main():
             WAITING_COUNT:   [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_count)],
             WAITING_URL:     [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url)],
             WAITING_IP:      [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_ip)],
-            WAITING_CURRENCY:[MessageHandler(filters.TEXT & ~filters.COMMAND, receive_currency)],
+            WAITING_DOMAIN:  [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_domain),
+                              CallbackQueryHandler(button_handler)],
             WAITING_ROI_SPENT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_roi_spent)],
             WAITING_ROI_EARNED: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_roi_earned)],
             WAITING_SHORT_URL:  [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_short_url)],
