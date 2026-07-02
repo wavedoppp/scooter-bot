@@ -1,1 +1,1 @@
-worker: python3 scooter_bot.py
+worker: python3 run_all.py

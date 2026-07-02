@@ -2,4 +2,4 @@
 nixPkgs = ["python312", "python312Packages.pip"]
 
 [start]
-cmd = "python3 scooter_bot.py"
+cmd = "python3 run_all.py"
